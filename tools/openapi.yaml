@@ -440,7 +440,7 @@ paths:
         - name: plugin
           in: query
           description: Namespace of the plugin to use.
-          required: true
+          required: false
           schema:
             type: string
         - name: arg
@@ -463,6 +463,7 @@ paths:
                       - use_plugin
                   type:
                     type: string
+                    nullable: true
                     enum: 
                       - download
                       - login
@@ -476,6 +477,7 @@ paths:
                       - 1
                   error:
                     type: string
+                    nullable: true
                   data:
                     type: object
                     description: Arbitrary data returned by the Plugin.
@@ -516,7 +518,7 @@ paths:
         - name: plugin
           in: query
           description: Namespace of the plugin to use.
-          required: true
+          required: false
           schema:
             type: string
         - name: arg
@@ -603,7 +605,7 @@ paths:
         - name: url
           in: query
           description: URL to download
-          required: true
+          required: false
           schema:
             type: string
             format: uri
@@ -615,6 +617,25 @@ paths:
             type: string
             minLength: 14
             maxLength: 14
+      requestBody:
+        required: false
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - url
+              properties:
+                url:
+                  description: URL to download
+                  type: string
+                  format: uri
+                catid:
+                  type: string
+                  description: Category ID to add the downloaded URL to.
+                  type: string
+                  minLength: 14
+                  maxLength: 14
       responses:
         '200':
           description: Enqueued job
@@ -1313,6 +1334,110 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OperationResponse' 
+  /archives/{id}/toc:
+    put: 
+      security:
+        - api_key: []
+      operationId: addArchiveToc
+      x-mojo-to: api-archive#add_toc
+      summary: 🔑 Add entry to Archive Table of Contents
+      description: >-
+        Add an entry to the Table of Contents of a given Archive.  
+        The ToC is stored as a JSON-encoded key-value array mapping a page to a title for the chapter/section starting at that page.  
+      tags:
+        - archives
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID of the Archive to process.
+          schema:
+            type: string
+            minLength: 40
+            maxLength: 40
+        - name: page
+          in: query
+          required: true
+          description: Page number where the chapter/section starts.
+          schema:
+            type: integer
+        - name: title
+          in: query
+          required: true
+          description: Title of the chapter/section.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Archive TOC updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
+              example:
+                operation: update_toc
+                success: 1
+                successMessage: Added ToC entry for page 143.
+        '400':
+          description: No archive ID response or other error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
+        '423':
+          description: Locked resource response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
+    delete:
+      security:
+        - api_key: []
+      operationId: deleteArchiveToc
+      x-mojo-to: api-archive#remove_toc
+      summary: 🔑 Remove entry from Archive Table of Contents
+      description: >-
+        Delete an entry from the Table of Contents of a given Archive.  
+      tags:
+        - archives
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID of the Archive to process.
+          schema:
+            type: string
+            minLength: 40
+            maxLength: 40
+        - name: page
+          in: query
+          required: true
+          description: Page number of the chapter/section to delete.
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Archive TOC updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
+              example:
+                operation: remove_toc
+                success: 1
+                successMessage: Removed ToC entry for page 143.
+        '400':
+          description: No archive ID response or other error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
+        '423':
+          description: Locked resource response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
   /archives/{id}/download:
     get:
       operationId: downloadArchive
@@ -1616,6 +1741,16 @@ paths:
                 operation: update_progress
                 error: Server-side Progress Tracking is disabled on this instance.
                 success: 0
+        '401':
+          description: Authentication required when authprogress is enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
+              example:
+                operation: update_progress
+                error: This operation requires authentication.
+                success: 0
         '423':
           description: Locked resource response
           content:
@@ -1623,6 +1758,43 @@ paths:
               schema:
                 $ref: '#/components/schemas/OperationResponse'
   /archives/{id}/isnew:
+    put:
+      security:
+        - api_key: []
+      operationId: setNewArchiveFlag
+      x-mojo-to: api-archive#add_new
+      summary: 🔑 Set Archive New flag
+      description: Sets/Restores the "New!" flag on an archive.
+      tags:
+        - archives
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID of the Archive to process.
+          schema:
+            type: string
+            minLength: 40
+            maxLength: 40
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
+        '400':
+          description: No archive ID response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
+        '423':
+          description: Locked resource response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
     delete:
       operationId: clearNewArchiveFlag
       x-mojo-to: api-archive#clear_new
@@ -1785,6 +1957,12 @@ paths:
           description: Limit search to untagged archives only.
           schema:
             type: boolean
+        - name: hidecompleted
+          in: query
+          required: false
+          description: Hide archives where reading progress has reached the end.
+          schema:
+            type: boolean
         - name: groupby_tanks
           in: query
           required: false
@@ -1888,6 +2066,12 @@ paths:
           description: Limit search to untagged archives only.
           schema:
             type: boolean
+        - name: hidecompleted
+          in: query
+          required: false
+          description: Hide archives where reading progress has reached the end.
+          schema:
+            type: boolean
         - name: groupby_tanks
           in: query
           required: false
@@ -1969,6 +2153,14 @@ paths:
             Default is 1 if not specified, to get all tags.
           schema:
             type: integer
+        - name: hide_excluded_namespaces
+          in: query
+          required: false
+          description: >-
+            Set to true to exclude namespaces configured in server settings from
+            the results. Default behavior returns all tags.
+          schema:
+            type: string
       responses:
         '200':
           description: Success response
@@ -2448,7 +2640,7 @@ paths:
       tags:
         - categories
       requestBody:
-        required: true
+        required: false
         content:
           application/x-www-form-urlencoded:
             schema:
@@ -2869,7 +3061,7 @@ paths:
       tags:
         - tankoubons
       requestBody:
-        required: true
+        required: false
         content:
           application/x-www-form-urlencoded:
             schema:
@@ -2965,11 +3157,16 @@ paths:
                     properties:
                       archives:
                         type: array
-                        description: Paginated list of archive IDs.
+                        description: Paginated list of archive IDs or tankoubon IDs.
                         items:
                           type: string
-                          minLength: 14
-                          maxLength: 14
+                          oneOf:
+                            - minLength: 40
+                              maxLength: 40
+                              pattern: "^[0-9a-f]{40}$"
+                            - minLength: 15
+                              maxLength: 15
+                              pattern: "^TANK_[0-9]{10}$"
                         uniqueItems: true
                       full_data:
                         type: array
@@ -3011,33 +3208,9 @@ paths:
             type: string
       requestBody:
         required: true
-        description: Json with 2 optional keys "archives" and "metadata" 
+        description: Json with 2 optional keys "archives" and "metadata"
         content:
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              properties:
-                archives:
-                  description: Ordered array with the IDs of the archives.
-                  type: array
-                  items:
-                    type: string
-                    minLength: 40
-                    maxLength: 40
-                metadata:
-                  description: Metadata parameters -- All are optional.
-                  type: object
-                  properties:
-                    name:
-                      type: string
-                      description: Name of the Tankoubon
-                    summary:
-                      type: string
-                      description: Summary of the Tankoubon
-                    tags:
-                      type: string
-                      description: Additional tags for the Tankoubon, in LRR comma-separated format.
-          multipart/form-data:
+          application/json:
             schema:
               type: object
               properties:
@@ -3239,6 +3412,9 @@ components:
         server_tracks_progress:
           type: boolean
           description: Whether the instance tracks reading progression server-side
+        authenticated_progress:
+          type: boolean
+          description: Whether the instance requires authentication for server-side progress updates
         total_pages_read:
           type: integer
           description: Total amount of pages read
@@ -3248,6 +3424,11 @@ components:
         cache_last_cleared:
           type: integer
           description: Timestamp for last time the search cache was wiped
+        excluded_namespaces:
+          type: array
+          items:
+            type: string
+          description: List of tag namespaces excluded from search suggestions and tag statistics
       example:
         archives_per_page: 100
         cache_last_cleared: 1728852701
@@ -3258,9 +3439,13 @@ components:
         nofun_mode: false
         server_resizes_images: false
         server_tracks_progress: true
+        authenticated_progress: false
         total_archives: 104
         total_pages_read: 252
         version: 0.9.30
+        excluded_namespaces:
+          - source
+          - date_added
         version_desc: I'm under Japanese influence and my honor's at stake!
         version_name: Law (Earthlings On Fire)
     PluginInfo:
@@ -3410,9 +3595,14 @@ components:
       properties:
         arcid:
           type: string
-          minLength: 40
-          maxLength: 40
-          description: Unique identifier for the archive
+          description: Unique identifier for the archive (40-char SHA1) or tankoubon (15-char TANK_* ID)
+          oneOf:
+            - minLength: 40
+              maxLength: 40
+              pattern: "^[0-9a-f]{40}$"
+            - minLength: 15
+              maxLength: 15
+              pattern: "^TANK_[0-9]{10}$"
         title:
           type: string
           description: Title of the archive
@@ -3424,10 +3614,14 @@ components:
           description: Comma-separated list of tags associated with the archive
         summary:
           type: string
+          nullable: true
           description: Summary description of the archive
         isnew:
-          type: boolean
-          description: Whether the archive is newly added
+          oneOf:
+            - type: boolean
+            - type: string
+          nullable: true
+          description: Whether the archive is newly added.
         extension:
           type: string
           description: File extension of the archive
@@ -3443,6 +3637,9 @@ components:
         size:
           type: integer
           description: Size of the archive in bytes
+        toc:
+          type: array
+          description: Table of contents for the archive
       example:
         arcid: 28697b96f0ac5858be2614ed10ca47742c9522fd
         isnew: false
@@ -3454,6 +3651,14 @@ components:
         title: Fate GO MEMO
         filename: Fate GO MEMO
         summary: null
+        size: 1234567
+        toc: 
+          - name: Chapter 1
+            page: 1
+          - name: Chapter 2
+            page: 13
+          - name: Chapter 3
+            page: 25
     CategoryMetadataJson:
       type: object
       description: >-
@@ -3477,7 +3682,7 @@ components:
           type: string
           description: Name of the category
         pinned:
-          type: int
+          type: integer
           description: Whether this category should be pinned in the UI
           enum:
             - 0
@@ -3542,6 +3747,7 @@ components:
           description: Comma-separated list of tags associated with the archive
         summary:
           type: string
+          nullable: true
           description: Summary description of the archive
         thumbhash:
           type: string

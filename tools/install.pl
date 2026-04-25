@@ -33,7 +33,8 @@ my @vendor_js = (
     "/swiper/swiper-bundle.min.js",                       "/preact/dist/preact.umd.js",
     "/clsx/dist/clsx.min.js",                             "/preact/compat/dist/compat.umd.js",
     "/preact/hooks/dist/hooks.umd.js",                    "/sweetalert2/dist/sweetalert2.min.js",
-    "/fscreen/dist/fscreen.esm.js",                       "/clipboard/dist/clipboard.min.js"
+    "/fscreen/dist/fscreen.esm.js",                       "/clipboard/dist/clipboard.min.js",
+    "/raty-js/build/raty.min.js",
 );
 
 my @vendor_woff = (
@@ -81,7 +82,6 @@ unless ( @ARGV > 0 ) {
 my $front  = $ARGV[0] eq "install-front";
 my $back   = $ARGV[0] eq "install-back";
 my $full   = $ARGV[0] eq "install-full";
-my $legacy = defined $ARGV[1] && $ARGV[1] eq "legacy";
 
 say( "Working Directory: " . getcwd );
 say("");
@@ -98,15 +98,15 @@ install_package( "Config::AutoConf", $cpanopt );
 IPC::Cmd->import('can_run');
 require Config::AutoConf;
 
-
 say("\r\nWill now check if all LRR software dependencies are met. \r\n");
 
-#Fails on win even if redis is in the path
-if ( IS_UNIX ) {
-    #Check for Redis
-    say("Checking for Redis...");
-    can_run('redis-server')
-      or die 'NOT FOUND! Please install a Redis server before proceeding.';
+#Fails on win even if valkey or redis are in the path
+if (IS_UNIX) {
+
+    #Check for Redis/Valkey
+    say("Checking for Redis/Valkey...");
+    can_run('valkey-server') || can_run('redis-server')
+      or die 'NOT FOUND! Please install a Redis/Valkey server before proceeding.';
     say("OK!");
 }
 
@@ -151,17 +151,20 @@ if ( $back || $full ) {
         install_package( "Linux::Inotify2", $cpanopt );
     }
 
-    if ( IS_UNIX ) {
+    if (IS_UNIX) {
         say("Installing dependencies for unix-like systems... (This will do nothing if the package is there already)");
 
-        install_package( "Net::DNS::Native", $cpanopt );
+        install_package( "Net::DNS::Native",            $cpanopt );
         install_package( "Mojolicious::Plugin::Status", $cpanopt );
     } else {
         say("Installing dependencies for windows systems... (This will do nothing if the package is there already)");
 
         install_package( "Win32::Process", $cpanopt );
-        install_package( "Win32::FileSystemHelper", "https://github.com/Guerra24/Win32-FileSystemHelper/archive/308b92c958bb4931dfd704cc5025f93e28ef0c8a.zip " . $cpanopt );
-        install_package( "File::ChangeNotify::Watcher::Win32", "https://github.com/Guerra24/File-ChangeNotify-Watcher-Win32/archive/7cb4e60823569cca8e7652d19b1ba5b5cac00a16.zip " .$cpanopt );
+        install_package( "Win32::FileSystemHelper",
+            "https://github.com/Guerra24/Win32-FileSystemHelper/archive/308b92c958bb4931dfd704cc5025f93e28ef0c8a.zip " . $cpanopt );
+        install_package( "File::ChangeNotify::Watcher::Win32",
+            "https://github.com/Guerra24/File-ChangeNotify-Watcher-Win32/archive/7cb4e60823569cca8e7652d19b1ba5b5cac00a16.zip "
+              . $cpanopt );
         install_package( "Win32API::File", $cpanopt );
     }
 
@@ -175,8 +178,7 @@ if ( $front || $full ) {
 
     say("\r\nObtaining remote Web dependencies...\r\n");
 
-    my $npmcmd = $legacy ? "npm install" : "npm ci";
-    if ( system($npmcmd) != 0 ) {
+    if ( system( "npm ci" ) != 0 ) {
         die "Something went wrong while obtaining node modules - Bailing out.";
     }
 

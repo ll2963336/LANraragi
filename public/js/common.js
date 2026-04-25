@@ -136,7 +136,7 @@ LRR.openInNewTab = function (url) {
  * @returns
  */
 LRR.toggleOverlay = function (selector) {
-    Reader.initializeArchiveOverlay();
+    Reader.updateArchiveOverlay();
     const overlay = $(selector);
     overlay.is(":visible")
         ? LRR.closeOverlay()
@@ -385,8 +385,50 @@ LRR.buildPageCountDiv = function (arcdata) {
     return "";
 };
 
-// Alias for backward compatibility with older versions
-LRR.buildProgressDiv = LRR.buildPageCountDiv;
+LRR.buildChapterObject = function(toc, totalpages) {
+    const chapters = [];
+    if (toc.length === 0) {
+        return chapters;
+    }
+
+    if (toc[0].page > 1) {
+        // Fill in gap before first chapter
+        chapters.push({
+            name: I18N.UntitledChapter,
+            startPage: 1,
+            endPage: toc[0].page - 1,
+        });
+    }
+
+    toc.forEach((entry) => {
+
+        if (chapters.length > 0) {
+            // Fill in gap between previous chapter and this one
+            const prevChapter = chapters[chapters.length - 1];
+            if (entry.page > prevChapter.startPage + 1) {
+                prevChapter.endPage = entry.page - 1;
+            } else {
+                prevChapter.endPage = prevChapter.startPage;
+            }
+        }
+
+        chapters.push({
+            name: entry.name,
+            startPage: entry.page,
+            endPage: null, // to be filled in later
+        });
+    });
+
+    // Fill in end page for last chapter
+    const lastChapter = chapters[chapters.length - 1];
+    if (lastChapter.startPage <= totalpages) {
+        lastChapter.endPage = totalpages;
+    } else {
+        lastChapter.endPage = lastChapter.startPage;
+    }
+
+    return chapters;
+}
 
 /**
  * Get the progress and pagecount for the given archive data, considering localStorage if needed.
@@ -457,14 +499,6 @@ LRR.getImgSize = function (target) {
         },
     });
     return imgSize;
-};
-
-LRR.getImgSizeAsync = function (target) {
-    return $.ajax({
-        url: target,
-        cache: true,
-        type: "HEAD",
-    });
 };
 
 /**

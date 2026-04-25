@@ -231,8 +231,8 @@ sub get_tags ($id) {
 sub build_json ( $id, %hash ) {
 
     # Grab all metadata from the hash
-    my ( $name, $title, $tags, $summary, $file, $isnew, $progress, $pagecount, $lastreadtime, $arcsize ) =
-      @hash{qw(name title tags summary file isnew progress pagecount lastreadtime arcsize)};
+    my ( $name, $title, $tags, $summary, $file, $isnew, $progress, $pagecount, $lastreadtime, $arcsize, $toc ) =
+      @hash{qw(name title tags summary file isnew progress pagecount lastreadtime arcsize toc)};
 
     $file = create_path($file);
 
@@ -241,6 +241,27 @@ sub build_json ( $id, %hash ) {
 
     # Parameters have been obtained, let's decode them.
     ( $_ = LANraragi::Utils::Redis::redis_decode($_) ) for ( $name, $title, $tags, $summary );
+
+    my @chapters = ();
+
+    if ( defined $toc ) {
+        eval { $toc = decode_json($toc) };
+
+        if ( my $decode_error = $@ ) {
+            get_logger( "Archive", "lanraragi" )->error("Failed to parse ToC JSON for archive $id: $decode_error");
+            $toc = undef;
+        }
+        if ( defined $toc && ref($toc) eq 'HASH' ) {
+            foreach my $page ( keys %$toc ) {
+                push @chapters, { page => $page + 0, name => $toc->{$page} };
+            }
+        } elsif ( defined $toc ) {
+            get_logger( "Archive", "lanraragi" )->error("ToC is not a hash: $toc");
+        }
+
+        # Sort chapters by page number
+        @chapters = sort { $a->{page} <=> $b->{page} } @chapters;
+    }
 
     # Workaround if title was incorrectly parsed as blank
     if ( !defined($title) || $title =~ /^\s*$/ ) {
@@ -258,7 +279,8 @@ sub build_json ( $id, %hash ) {
         progress     => $progress     ? int($progress)     : 0,
         pagecount    => $pagecount    ? int($pagecount)    : 0,
         lastreadtime => $lastreadtime ? int($lastreadtime) : 0,
-        size         => $arcsize      ? int($arcsize)      : 0
+        size         => $arcsize      ? int($arcsize)      : 0,
+        toc          => \@chapters
     };
 
     return $arcdata;

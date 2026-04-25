@@ -9,7 +9,9 @@ Reader.id = "";
 Reader.force = false;
 Reader.previousPage = -1;
 Reader.currentPage = -1;
+Reader.currentChapter = null;
 Reader.showingSinglePage = true;
+Reader.pageThumbnails = [];
 Reader.preloadedImg = {};
 Reader.preloadedSizes = {};
 Reader.spaceScroll = { timeout: null, animationId: null };
@@ -105,25 +107,25 @@ Reader.initializeAll = function () {
                 .addClass("far fa-bookmark");
         }
     });
-    $(document).on("click.set-rating", "#set-rating", () => {
-        let tags = LRR.splitTagsByNamespace(Reader.tags);
-        let selectedRating = $("#rating").val();
-        if (selectedRating === "") { return };
-        tags.rating = [selectedRating];
-        let tagList = LRR.buildTagList(tags);
-        Server.updateTagsFromArchive(Reader.id, tagList);
-        $("#tagContainer > table").replaceWith(LRR.buildTagsDiv(tagList.join(",")));
+
+    $(document).on("click.add-toc", ".add-toc", (e) => { 
+        const page = +$(e.target).closest("div[page]").attr("page") + 1; 
+        Reader.addTocSection(page);
+
+        // Stop event propagation to avoid going to page
+        e.stopPropagation();
+     });
+    $(document).on("click.edit-toc", ".edit-toc", (e) => Reader.addTocSection(Reader.currentChapter.startPage, Reader.currentChapter.name));
+    $(document).on("click.remove-toc", ".remove-toc", Reader.removeTocSection);
+
+    $(document).on("click.set-thumbnail", ".set-thumbnail", (e) => {
+        const pageNumber = +$(e.target).closest("div[page]").attr("page") + 1;
+        Server.callAPI(`/api/archives/${Reader.id}/thumbnail?page=${pageNumber}`,
+            "PUT", I18N.ReaderUpdateThumbnail(pageNumber), I18N.ReaderUpdateThumbnailError, null);
+
+        // Stop event propagation to avoid going to page
+        e.stopPropagation();
     });
-    $(document).on("click.clear-rating", "#clear-rating", () => {
-        let tags = LRR.splitTagsByNamespace(Reader.tags);
-        delete tags.rating;
-        let tagList = LRR.buildTagList(tags);
-        Server.updateTagsFromArchive(Reader.id, tagList);
-        document.querySelector("#rating").selectedIndex = 0;
-        $("#tagContainer > table").replaceWith(LRR.buildTagsDiv(tagList.join(",")));
-    });
-    $(document).on("click.set-thumbnail", "#set-thumbnail", () => Server.callAPI(`/api/archives/${Reader.id}/thumbnail?page=${Reader.currentPage + 1}`,
-        "PUT", I18N.ReaderUpdateThumbnail(Reader.currentPage), I18N.ReaderUpdateThumbnailError, null));
 
     $(document).on("click.thumbnail", ".quick-thumbnail", (e) => {
         LRR.closeOverlay();
@@ -131,14 +133,14 @@ Reader.initializeAll = function () {
         Reader.goToPage(pageNumber);
     });
 
+    
     // Apply full-screen utility
     // F11 Fullscreen is totally another "Fullscreen", so its support is beyong consideration.
+    // Small override function, always returns boolean
+    window.fscreen.inFullscreen = () => !!window.fscreen.fullscreenElement;
     if (!window.fscreen.fullscreenEnabled) {
-        // Fullscreen mode is unsupported
-        $("#toggle-full-screen").hide();
-    } else {
-        // Small override function, always returns boolean
-        window.fscreen.inFullscreen = () => !!window.fscreen.fullscreenElement;
+        // Fullscreen mode is unsupported; use attribute selector to hide all instances
+        $("[id='toggle-full-screen']").hide();
     }
 
     // Infer initial information from the URL
@@ -150,41 +152,102 @@ Reader.initializeAll = function () {
     // Remove the "new" tag with an api call
     Server.callAPI(`/api/archives/${Reader.id}/isnew`, "DELETE", null, I18N.ReaderErrorClearingNew, null);
 
-    // Get basic metadata
-    Server.callAPI(`/api/archives/${Reader.id}/metadata`, "GET", null, I18N.ServerInfoError,
+    // Load metadata for the requested ID and populate the page
+    Reader.loadContentData().then(() => {
+      
+        document.title = Reader.content.title;
+        $(".max-page").text(Reader.content.pages);
+
+        // Regex look in tags for artist
+        const artist = Reader.content.tags.match(/artist:([^,]+)(?:,|$)/i);
+        if (artist) {
+            const artistName = artist[1];
+            const artistSearchUrl = `/?sort=0&q=artist%3A${encodeURIComponent(artistName)}%24&`;
+            const link = $("<a></a>")
+                .attr("href", artistSearchUrl)
+                .text(artistName);
+            const titleContainer = $("<span></span>")
+                .text(`${Reader.content.title} by `)
+                .append(link);
+            $("#archive-title").empty().append(titleContainer);
+            $("#archive-title-overlay").empty().append(titleContainer.clone());
+        } else {
+            $("#archive-title").text(Reader.content.title);
+            $("#archive-title-overlay").text(Reader.content.title);
+        }
+
+        $("#tagContainer").append(LRR.buildTagsDiv(Reader.content.tags));
+
+        const ratyEl = document.querySelector('[data-raty]');
+        if (ratyEl) {
+            const rating = LRR.splitTagsByNamespace(Reader.content.tags).rating?.at(0).length;
+            new Raty(ratyEl, {
+                starType: 'i',
+                cancelButton: true,
+                cancelClass: 'fas fa-trash raty-cancel',
+                cancelHint: I18N.ReaderClearRating,
+                cancelPlace: 'right',
+                score: rating,
+                click: function(score, element, evt) {
+
+                    let tags = LRR.splitTagsByNamespace(Reader.content.tags);
+                    let selectedRating = score;
+
+                    if (selectedRating === null)
+                        delete tags.rating;
+                    else {
+                        // Create a tag with star emoji corresponding to the rating (e.g. rating:⭐⭐⭐ for a 3-star rating)
+                        selectedRating = "⭐".repeat(score);
+                        tags.rating = [selectedRating];
+                    }
+
+                    let tagList = LRR.buildTagList(tags);
+                    Server.updateTagsFromArchive(Reader.id, tagList);
+                    $("#tagContainer > table").replaceWith(LRR.buildTagsDiv(tagList.join(",")));
+                }
+            }).init();
+        }
+
+        $("#tagContainer").append(`<div class="archive-summary"/>`);
+        $(".archive-summary").text(Reader.content.summary);
+
+        // Get the chapter for the current page (if any)
+        Reader.currentChapter = Reader.getCurrentChapter();
+
+        // Load the actual reader pages now that we have basic info
+        Reader.loadImages();
+    });
+
+    // Fetch "bookmark" category ID and setup icon
+    Reader.loadBookmarkStatus();
+};
+
+Reader.loadContentData = function () {
+
+    // Initialize content object to hold metadata -- This is a recursive object that will be used to build the page overlay.
+    // (For tanks, content.chapters will hold an array of archive IDs, for archives it'll hold TOC data.)
+    Reader.content = {
+        id: Reader.id,
+        title: "",
+        pages: 0,
+        chapters: [],
+        tags: "",
+        summary: ""
+    };
+
+    // If the ID is a Tank ID (TANK_xxxx), use the Tankoubon API for metadata
+    if (Reader.id.startsWith("TANK_")) {
+
+        // TODO
+    }
+    else return Server.callAPI(`/api/archives/${Reader.id}/metadata`, "GET", null, I18N.ServerInfoError,
         (data) => {
             let { title } = data;
 
-            // Regex look in tags for artist
-            const artist = data.tags.match(/artist:([^,]+)(?:,|$)/i);
-            if (artist) {
-                const artistName = artist[1];
-                const artistSearchUrl = `/?sort=0&q=artist%3A${encodeURIComponent(artistName)}%24&`;
-                const link = $("<a></a>")
-                    .attr("href", artistSearchUrl)
-                    .text(artistName);
-                const titleContainer = $("<span></span>")
-                    .text(`${title} by `)
-                    .append(link);
-                $("#archive-title").empty().append(titleContainer);
-                $("#archive-title-overlay").empty().append(titleContainer.clone());
-            } else {
-                $("#archive-title").text(title);
-                $("#archive-title-overlay").text(title);
-            }
-            if (data.pagecount) { $(".max-page").text(data.pagecount); }
-            document.title = title;
-
-            Reader.tags = data.tags;
-            $("#tagContainer").append(LRR.buildTagsDiv(Reader.tags));
-
-            // Setup source link icon if source tag exists
-            Reader.loadSourceLink();
-
-            if (data.summary) {
-                $("#tagContainer").append("<div class=\"archive-summary\"/>");
-                $(".archive-summary").text(data.summary);
-            }
+            Reader.content.title = title;
+            Reader.content.pages = data.pagecount;
+            Reader.content.tags = data.tags;
+            Reader.content.summary = data.summary;
 
             // Use localStorage progress value instead of the server one if needed
             if (Reader.trackProgressLocally && !(Reader.authenticateProgress && LRR.isUserLogged())) {
@@ -193,17 +256,15 @@ Reader.initializeAll = function () {
                 Reader.progress = data.progress - 1;
             }
 
-            // check and display warnings for unsupported filetypes
+            if (data.toc) 
+                Reader.content.chapters = LRR.buildChapterObject(data.toc, data.pagecount);
+
+            // Check and display warnings for unsupported filetypes
             Reader.checkFiletypeSupport(data.extension);
 
-            // Load the actual reader pages now that we have basic info
-            Reader.loadImages();
-        },
+        }
     );
-
-    // Fetch "bookmark" category ID and setup icon
-    Reader.loadBookmarkStatus();
-};
+}
 
 /**
  * Adds a removable category flag to the categories section within archive overview.
@@ -222,6 +283,59 @@ Reader.addCategoryBadge = function (categoryId) {
 
 Reader.removeCategoryBadge = function (categoryId) {
     $(`#archive-categories a.remove-category[data-id="${categoryId}"]`).closest(".gt").remove();
+}
+
+Reader.addTocSection = function (page, currentTitle = null) {
+
+    LRR.closeOverlay(); 
+    LRR.showPopUp({
+        title: I18N.ReaderTocPrompt,
+        input: "text",
+        inputPlaceholder: currentTitle || I18N.UntitledChapter, 
+        inputAttributes: {
+            autocapitalize: "off",
+        },
+        showCancelButton: true,
+        reverseButtons: true,
+    }).then((result) => {
+        if (result.isConfirmed && result.value.trim() !== "") {
+            Server.callAPI(`/api/archives/${Reader.id}/toc?page=${page}&title=${result.value}`, "PUT", "Chapter added!", I18N.ReaderTocError,
+                () => Reader.loadContentData().then(() => {
+                    Reader.updateArchiveOverlay(true);
+                    Reader.toggleArchiveOverlay();
+                    Reader.goToPage(page);
+                })
+            );
+        } else {
+            Reader.toggleArchiveOverlay();
+        }
+    });
+}
+
+Reader.removeTocSection = function () {
+
+    LRR.closeOverlay(); 
+    LRR.showPopUp({
+        text: I18N.ReaderDeleteTocPrompt,
+        icon: "warning",
+        showCancelButton: true,
+        focusConfirm: false,
+        confirmButtonText: I18N.ConfirmYes,
+        reverseButtons: true,
+        confirmButtonColor: "#d33",
+    }).then((result) => {
+        if (result.isConfirmed) {
+            let page = Reader.currentChapter.startPage;
+            Server.callAPI(`/api/archives/${Reader.id}/toc?page=${page}`, "DELETE", "Chapter removed!", I18N.ReaderTocError,
+                () => Reader.loadContentData().then(() => {
+                    Reader.updateArchiveOverlay(true);
+                    Reader.toggleArchiveOverlay();
+                })
+            );
+        } else {
+            Reader.toggleArchiveOverlay();
+        }
+    });
 }
 
 Reader.loadImages = function () {
@@ -245,7 +359,7 @@ Reader.loadImages = function () {
 
             if (Reader.infiniteScroll) {
                 Reader.initInfiniteScrollView();
-                if (Reader.tags?.includes("webtoon")) {
+                if (Reader.content.tags?.includes("webtoon")) {
                     $("head").append(`
                         <style id="webtoon-css">
                             .reader-image {
@@ -282,6 +396,7 @@ Reader.loadImages = function () {
             $("#img").attr("src", new LRR.apiURL("/img/flubbed.gif").toString());
             $("#display").append(`<h2>${I18N.ReaderArchiveError}</h2>`);
         }
+        Reader.generateThumbnails();
     });
 };
 
@@ -402,13 +517,13 @@ Reader.handleShortcuts = function (e) {
         return;
     }
     switch (e.which) {
-        case 8: // backspace
-            document.location.href = $("#return-to-index").attr("href");
-            break;
-        case 27: // escape
-            LRR.closeOverlay();
-            break;
-        case 32: // spacebar
+    case 8: // backspace
+        document.location.href = $("#return-to-index").attr("href");
+        break;
+    case 27: // escape
+        LRR.closeOverlay();
+        break;
+    case 32: // spacebar
             Reader.spaceScrollProcessInput(e);
             break;
         case 37: // left arrow
@@ -461,7 +576,7 @@ Reader.handleShortcuts = function (e) {
  */
 Reader.spaceScrollProcessInput = function (e) {
     //Break early and go back to browser default behaviour if overlay is open or gallery has webtoon tag and in infiniteScroll
-    if ($(".page-overlay").is(":visible") || e.repeat || (Reader.infiniteScroll && Reader.tags?.includes("webtoon"))) return;
+    if ($(".page-overlay").is(":visible") || e.repeat || (Reader.infiniteScroll && Reader.content.tags?.includes("webtoon"))) return;
 
     e.preventDefault();
     // Capture direction now so we dont lose it if shift state changes while held
@@ -696,12 +811,10 @@ Reader.loadSourceLink = function () {
 
 Reader.updateMetadata = function () {
     const img = $("#img")[0];
-    const imageUrl = new URL(img.src);
-    const filename = imageUrl.searchParams.get("path");
+    const filename = img.dataset.filename;
 
     const imgDoublePage = $("#img_doublepage")[0];
-    const imageUrlDoublePage = new URL(imgDoublePage.src);
-    const filenameDoublePage = imageUrlDoublePage.searchParams.get("path");
+    const filenameDoublePage = imgDoublePage.dataset.filename;
 
     if (!filename && Reader.showingSinglePage) {
         Reader.currentPageLoaded = true;
@@ -752,7 +865,7 @@ Reader.updateMetadata = function () {
     $("#i3").removeClass("loading");
 };
 
-Reader.goToPage = function (page) {
+Reader.goToPage = async function (page) {
     Reader.previousPage = Reader.currentPage;
     Reader.currentPage = Math.min(Reader.maxPage, Math.max(0, +page));
     Reader.showingSinglePage = false;
@@ -761,31 +874,42 @@ Reader.goToPage = function (page) {
         $("#display img").get(Reader.currentPage).scrollIntoView({ block: "nearest" });
     } else {
         $("#img_doublepage").attr("src", "");
+        $("#img_doublepage").attr("data-filename", "");
         $("#display").removeClass("double-mode");
         if (Reader.doublePageMode && Reader.currentPage > 0
             && Reader.currentPage < Reader.maxPage) {
             // Composite an image and use that as the source
-            const img1 = Reader.loadImage(Reader.currentPage);
-            const img2 = Reader.loadImage(Reader.currentPage + 1);
+            const img1 = await Reader.loadImage(Reader.currentPage);
+            const img1Filename = Reader.getFilename(Reader.currentPage);
+            const img2 = await Reader.loadImage(Reader.currentPage + 1);
+            const img2Filename = Reader.getFilename(Reader.currentPage + 1);
             // If w > h on one of the images(widespread), set canvasdata to the first image only
             if (img1.naturalWidth > img1.naturalHeight || img2.naturalWidth > img2.naturalHeight) {
                 // Depending on whether we were going forward or backward, display img1 or img2
-                const wideSrc = Reader.previousPage > Reader.currentPage ? img2.src : img1.src;
+                const wideSrc = Reader.previousPage > Reader.currentPage ? img2 : img1;
+                const wideFilename = Reader.previousPage > Reader.currentPage ? img2Filename : img1Filename;
                 $("#img").attr("src", wideSrc);
+                $("#img").attr("data-filename", wideFilename);
                 Reader.showingSinglePage = true;
             } else {
                 if (Reader.mangaMode) {
-                    $("#img").attr("src", img2.src);
-                    $("#img_doublepage").attr("src", img1.src);
+                    $("#img").attr("src", img2);
+                    $("#img").attr("data-filename", img2Filename);
+                    $("#img_doublepage").attr("src", img1);
+                    $("#img_doublepage").attr("data-filename", img1Filename);
                 } else {
-                    $("#img").attr("src", img1.src);
-                    $("#img_doublepage").attr("src", img2.src);
+                    $("#img").attr("src", img1);
+                    $("#img").attr("data-filename", img1Filename);
+                    $("#img_doublepage").attr("src", img2);
+                    $("#img_doublepage").attr("data-filename", img2Filename);
                 }
                 $("#display").addClass("double-mode");
             }
         } else {
-            const img = Reader.loadImage(Reader.currentPage);
-            $("#img").attr("src", img.src);
+            const img = await Reader.loadImage(Reader.currentPage);
+            const imgFilename = Reader.getFilename(Reader.currentPage);
+            $("#img").attr("src", img);
+            $("#img").attr("data-filename", imgFilename);
             Reader.showingSinglePage = true;
         }
 
@@ -805,17 +929,18 @@ Reader.goToPage = function (page) {
         window.scrollTo(0, 0);
     }
 
+    Reader.updateArchiveOverlay();
     Reader.updateProgress();
 };
 
 Reader.updateProgress = function () {
     // Send an API request to update progress on the server
     if (Reader.authenticateProgress && LRR.isUserLogged()) {
-        Server.callAPI(`/api/archives/${Reader.id}/progress/${Reader.currentPage + 1}`, "PUT", null, I18N.ReaderErrorProgress, null);
+        Server.updateServerSideProgress(Reader.id, Reader.currentPage + 1);
     } else if (Reader.trackProgressLocally) {
         localStorage.setItem(`${Reader.id}-reader`, Reader.currentPage + 1);
     } else if (!Reader.authenticateProgress) {
-        Server.callAPI(`/api/archives/${Reader.id}/progress/${Reader.currentPage + 1}`, "PUT", null, I18N.ReaderErrorProgress, null);
+        Server.updateServerSideProgress(Reader.id, Reader.currentPage + 1);
     }
 };
 
@@ -835,19 +960,14 @@ Reader.preloadImages = function () {
     }
 };
 
-Reader.loadImage = function (index) {
+Reader.loadImage = async function (index) {
     const src = Reader.pages[index];
 
     if (!Reader.preloadedImg[src]) {
-        const img = new Image();
-        img.src = src;
-        Reader.preloadedImg[src] = img;
-        if (!Reader.preloadedSizes[index]) {
-            LRR.getImgSizeAsync(src).done((data, textStatus, request) => {
-                const size = parseInt(request.getResponseHeader("Content-Length") / 1024, 10);
-                Reader.preloadedSizes[index] = size;
-            });
-        }
+        const res = await fetch(src);
+        Reader.preloadedSizes[index] = parseInt(res.headers.get("Content-Length") / 1024, 10);
+        const blob = await res.blob();
+        Reader.preloadedImg[src] = URL.createObjectURL(blob);
     }
 
     return Reader.preloadedImg[src];
@@ -1013,9 +1133,10 @@ Reader.startAutoNextPage = function () {
             doPageTurn();
             return;
         }
-        aEls.text(formatCountdown(Reader.autoNextPageCountdown));
-    }, 100);
-}
+        Reader.autoNextPageCountdown -= 1;
+        aEls.text(Reader.autoNextPageCountdown);
+    }, 1000);
+};
 
 Reader.stopAutoNextPage = function () {
     Reader.autoNextPage = false;
@@ -1027,7 +1148,7 @@ Reader.stopAutoNextPage = function () {
 Reader.toggleAutoNextPage = function () {
     Reader.autoNextPage ? Reader.stopAutoNextPage() : Reader.startAutoNextPage();
     return false; // prevent scrolling to top
-}
+};
 
 Reader.toggleOverlayByDefault = function () {
     Reader.overlayByDefault = localStorage.showOverlayByDefault = !Reader.showOverlayByDefault;
@@ -1047,8 +1168,8 @@ Reader.toggleArchiveOverlay = function () {
 Reader.toggleFullScreen = function () {
     if (window.fscreen.inFullscreen()) {
         // if already full screen; exit
-        window.fscreen.exitFullscreen();
-        Reader.handleFullScreen();
+        window.fscreen.exitFullscreen().then(() =>
+            Reader.handleFullScreen());
     } else {
         // else go fullscreen
         Reader.handleFullScreen(true);
@@ -1071,32 +1192,101 @@ Reader.handleFullScreen = function (enableFullscreen = false) {
     }
 };
 
-Reader.initializeArchiveOverlay = function () {
-    if ($("#archivePagesOverlay").attr("loaded") === "true") {
-        return;
+Reader.getCurrentChapter = function () {
+    let currentChapter = null;
+
+    if (Reader.content.chapters) {
+        Reader.content.chapters.forEach((chapter) => {
+            if (Reader.currentPage + 1 >= chapter.startPage &&
+                Reader.currentPage + 1 <= chapter.endPage) {
+                currentChapter = chapter;
+            }
+        });
+    }
+    return currentChapter;
+};
+
+Reader.updateArchiveOverlay = function (forceUpdate = false) {
+    $("#extract-spinner").hide();
+
+    // Check if the overlay actually needs to be updated
+    // If it's already loaded and we're still in the same chapter (or no chapter), do nothing
+    if ($("#archivePagesOverlay").attr("loaded") === "true" && !forceUpdate) {
+
+        if ((Reader.currentChapter === null) || 
+            (Reader.currentPage + 1 >= Reader.currentChapter.startPage &&
+             Reader.currentPage + 1 <= Reader.currentChapter.endPage)) {
+            return;
+        }
     }
 
-    $("#extract-spinner").hide();
+    // Otherwise, update chapter and overlay -- If there are no chapters defined, just show all pages
+    Reader.currentChapter = Reader.getCurrentChapter();
+    let firstPage = Reader.currentChapter ? Reader.currentChapter.startPage : 1;
+    let lastPage = Reader.currentChapter ? Reader.currentChapter.endPage : Reader.pages.length;
+
+    $("#overlay-section").html(Reader.currentChapter ? Reader.currentChapter.name : I18N.ReaderPages);
+
+    if (Reader.currentChapter !== null) {
+        // Create <select> options for jumping to other chapters
+        let chapterOptions = `<select class="favtag-btn" id="chapter-select">`;
+        if (Reader.content.chapters) {
+            Reader.content.chapters.forEach((chapter, index) => {
+                const selected = (Reader.currentChapter && chapter.startPage === Reader.currentChapter.startPage) ? "selected" : "";
+                chapterOptions += `<option value="${chapter.startPage}" ${selected}>${chapter.name}</option>`;
+            });
+        }
+        chapterOptions += `</select>`;
+
+        if (LRR.isUserLogged() ) 
+            chapterOptions += `<a class="fas fa-pencil-alt edit-toc" href="#" style="padding:8px; font-size:14px" title="${I18N.ReaderEditToc}"/>
+                            <a class="fas fa-trash-alt remove-toc" href="#" style="padding:8px; font-size:14px" title="${I18N.ReaderDeleteToc}"/>`;
+
+        $(".chapter-selector").html(chapterOptions);
+
+        $("#chapter-select").off("change").on("change", function () {
+            Reader.goToPage($(this).val() - 1);
+        });
+    } else {
+        $(".chapter-selector").html("");
+    }
 
     // For each link in the pages array, craft a div and jam it in the overlay.
     let htmlBlob = "";
-    for (let index = 0; index < Reader.pages.length; ++index) {
-        const page = index + 1;
+    for (let page = firstPage; page < lastPage + 1; ++page) {
+        const index = page - 1;
 
         const thumbCss = (localStorage.cropthumbs === "true") ? "id3" : "id3 nocrop";
         const thumbnailUrl = new LRR.apiURL(`/api/archives/${Reader.id}/thumbnail?page=${page}`);
-        const thumbnail = `
+        
+        let thumbnail = `
             <div class='${thumbCss} quick-thumbnail' page='${index}' style='display: inline-block; cursor: pointer'>
                 <span class='page-number'>${I18N.ReaderPage(page)}</span>
-                <img src="${thumbnailUrl}" id="${index}_thumb" loading="lazy" />
-                <i id="${index}_spinner" class="fa fa-4x fa-circle-notch fa-spin ttspinner" style="display:flex;justify-content: center; align-items: center;"></i>
+                <img src="${thumbnailUrl}" id="${index}_thumb" loading="lazy" />`;
+        
+        if (LRR.isUserLogged()) 
+            thumbnail += `<a href="#" style="padding:12px; top:2%; left:72%;" 
+                             title="${I18N.ReaderSetPageAsThumbnail}" 
+                             class="fas fa-file-image page-number set-thumbnail"></a>
+                          <a href="#" style="padding:12px; top:80%; left:72%;" 
+                             title="${I18N.ReaderAddToc}" 
+                             class="fas fa-book-medical page-number add-toc"></a>`;
+
+        if (Reader.pageThumbnails.includes(index)) thumbnail += 
+            `</div>`;
+        else thumbnail += 
+                `<i id="${index}_spinner" class="fa fa-4x fa-circle-notch fa-spin ttspinner" style="display:flex;justify-content: center; align-items: center;"></i>
             </div>`;
 
         htmlBlob += thumbnail;
     }
+
     // NOTE: This can be slow on huge archives and on slower devices, due to the huge DOM change.
-    $("#archivePagesOverlay").append(htmlBlob);
+    $("#pages-section").html(htmlBlob);
     $("#archivePagesOverlay").attr("loaded", "true");
+};
+
+Reader.generateThumbnails = function () {
 
     // Queue a single minion job for thumbnails and check on its progress regularly
     const thumbProgress = function (notes) {
@@ -1106,7 +1296,9 @@ Reader.initializeArchiveOverlay = function () {
         for (let i = 1; i <= notes.total_pages; i++) {
             if (Object.hasOwn(notes, i) && notes[i] === "processed") {
                 const index = i - 1;
-                // If the spinner is still visible, update the thumbnail
+                Reader.pageThumbnails.push(index);
+
+                // Live-update the page thumbnail in the overlay if it's visible
                 if ($(`#${index}_spinner`).attr("loaded") !== "true") {
                     // Set image source to the thumbnail
                     const thumbnailUrl = new LRR.apiURL(`/api/archives/${Reader.id}/thumbnail?page=${i}&cachebust=${Date.now()}`);
@@ -1122,6 +1314,7 @@ Reader.initializeArchiveOverlay = function () {
         .then((response) => {
             if (response.status === 200) {
                 // Thumbnails are already generated, there's nothing to do. Very nice!
+                Reader.pageThumbnails = [...Array(Reader.pages.length).keys()];
                 $(".ttspinner").hide();
                 return;
             }
@@ -1198,3 +1391,7 @@ Reader.handlePaginator = function () {
             break;
     }
 };
+
+Reader.getFilename = function(index) {
+    return new URLSearchParams(Reader.pages[index].split("?")[1]).get("path");
+}

@@ -343,11 +343,12 @@ Index.promptCustomColumn = function (column) {
     }).then((result) => {
         if (result.isConfirmed) {
             if (!LRR.isNullOrWhitespace(result.value)) {
-                localStorage.setItem(`customColumn${column}`, result.value.trim());
+                const namespace = result.value.trim();
+                localStorage.setItem(`customColumn${column}`, namespace);
 
-                // Absolutely disgusting
-                IndexTable.dataTable.settings()[0].aoColumns[column].sName = result.value.trim();
-                Index.updateTableHeaders();
+                IndexTable.dataTable.settings()[0].aoColumns[column].sName = namespace;
+                // Update header text in-place to preserve DataTables sort handlers
+                $(`#header-${column}`).html(namespace.charAt(0).toUpperCase() + namespace.slice(1));
                 IndexTable.doSearch();
             }
         }
@@ -408,7 +409,8 @@ Index.handleCustomSort = function () {
         order[0][0] = 1;
         localStorage.customColumn1 = namespace;
         IndexTable.dataTable.settings()[0].aoColumns[1].sName = namespace;
-        Index.updateTableHeaders();
+        // Update header text in-place to preserve DataTables sort handlers
+        $(`#header-1`).html(namespace.charAt(0).toUpperCase() + namespace.slice(1));
     }
 
     IndexTable.dataTable.order(order);
@@ -425,11 +427,14 @@ Index.updateCarousel = function (e) {
 
     // Hit a different API endpoint depending on the requested localStorage carousel type
     let endpoint;
+    const filter = IndexTable.currentSearch ? `&filter=${IndexTable.currentSearch}` : "";
+    const category = Index.selectedCategory ? `&category=${Index.selectedCategory}` : "";
+
     switch (localStorage.carouselType) {
         case "random":
             $("#carousel-icon")[0].classList = "fas fa-random";
             $("#carousel-title").text(I18N.CarouselRandom);
-            endpoint = `/api/search/random?filter=${IndexTable.currentSearch}&category=${Index.selectedCategory}&count=15`;
+            endpoint = `/api/search/random?count=15${filter}${category}`;
 
             // Special categories that imply additional query params
             if (Index.selectedCategory === "NEW_ONLY") {
@@ -442,22 +447,22 @@ Index.updateCarousel = function (e) {
         case "inbox":
             $("#carousel-icon")[0].classList = "fas fa-envelope-open-text";
             $("#carousel-title").text(I18N.NewArchives);
-            endpoint = `/api/search?filter=${IndexTable.currentSearch}&category=${Index.selectedCategory}&newonly=true&sortby=date_added&order=desc&start=-1`;
+            endpoint = `/api/search?newonly=true&sortby=date_added&order=desc&start=-1${filter}${category}`;
             break;
         case "untagged":
             $("#carousel-icon")[0].classList = "fas fa-edit";
             $("#carousel-title").text(I18N.UntaggedArchives);
-            endpoint = `/api/search?filter=${IndexTable.currentSearch}&category=${Index.selectedCategory}&untaggedonly=true&sortby=date_added&order=desc&start=-1`;
+            endpoint = `/api/search?untaggedonly=true&sortby=date_added&order=desc&start=-1${filter}${category}`;
             break;
         case "ondeck":
             $("#carousel-icon")[0].classList = "fas fa-book-reader";
             $("#carousel-title").text(I18N.CarouselOnDeck);
-            endpoint = `/api/search?filter=${IndexTable.currentSearch}&sortby=lastread`;
+            endpoint = `/api/search?sortby=lastread&hidecompleted=true${filter}`;
             break;
         default:
             $("#carousel-icon")[0].classList = "fas fa-pastafarianism";
             $("#carousel-title").text("What???");
-            endpoint = `/api/search?filter=${IndexTable.currentSearch}&category=${Index.selectedCategory}`;
+            endpoint = `/api/search?${filter}${category}`.replace(/\?$/, "");
             break;
     }
 
@@ -548,10 +553,10 @@ Index.checkVersion = function () {
                 return response.json();
             }
             if (response.status === 403) {
-                console.error("Github API rate limit exceeded: ", response);
+                console.warn("Github API rate limit exceeded: ", response);
                 throw new Error(I18N.IndexGithubRateLimitError);
             }
-            console.error("GitHub API returned: ", response);
+            console.warn("GitHub API returned: ", response);
             throw new Error(I18N.IndexGithubAPIError(response.status));
         })
         .then((data) => {
@@ -603,10 +608,10 @@ Index.fetchChangelog = function () {
                     return response.json();
                 }
                 if (response.status === 403) {
-                    console.error("Github API rate limit exceeded: ", response);
+                    console.warn("Github API rate limit exceeded: ", response);
                     throw new Error(I18N.IndexGithubRateLimitError);
                 }
-                console.error("GitHub API returned: ", response);
+                console.warn("GitHub API returned: ", response);
                 throw new Error(I18N.IndexGithubAPIError(response.status));
             })
             .then((data) => {
@@ -795,13 +800,13 @@ Index.handleContextMenu = function (option, id) {
  * Load tag suggestions for the tag search bar.
  */
 Index.loadTagSuggestions = function () {
-    // Query the tag cloud API to get the most used tags.
-    Server.callAPI("/api/database/stats?minweight=2", "GET", null, I18N.TagStatsLoadFailure,
+    // Query the tag cloud API to get the most used tags, excluding configured namespaces.
+    Server.callAPI("/api/database/stats?minweight=2&hide_excluded_namespaces=true", "GET", null, I18N.TagStatsLoadFailure,
         (data) => {
             // Get namespaces objects in the data array to fill the namespace-sortby combobox
             const namespacesSet = new Set(data.map((element) => (element.namespace === "parody" ? "series" : element.namespace)));
             namespacesSet.forEach((element) => {
-                if (element !== "" && element !== "date_added") {
+                if (element !== "") {
                     $("#namespace-sortby").append(`<option value="${element}">${element.charAt(0).toUpperCase() + element.slice(1)}</option>`);
                 }
             });
@@ -961,6 +966,7 @@ Index.resizableColumns = function () {
     let currentIndex;
     let startX;
     let startWidth;
+    let didDrag = false;
 
     const headers = document.querySelectorAll("#header-row th");
     headers.forEach(header => {
@@ -975,17 +981,21 @@ Index.resizableColumns = function () {
                 if (!Number.isInteger(startWidth))
                     startWidth = parseInt(startWidth.replace("px", ""));
 
+                didDrag = false;
+
                 document.addEventListener("mousemove", resizeColumn);
                 document.addEventListener("mouseup", stopResize);
-
-                // Disable DataTables sorting while resizing
-                // (Unfortunately, sorting is perma-disabled after this..)
-                // TODO fix both deprecated and the broken sorting
-                $("th").unbind("click.DT");
 
                 document.body.style.cursor = "col-resize";
             }
         });
+        header.addEventListener("click", function (e) {
+            if (didDrag) {
+                // If releasing from a drag, block click.DT handler from triggering a draw.
+                e.stopImmediatePropagation();
+                didDrag = false;
+            }
+        }, true);
         header.addEventListener("mousemove", function (event) {
             if (event.offsetX > header.offsetWidth - 10) {
                 header.style.cursor = "col-resize";
@@ -996,6 +1006,7 @@ Index.resizableColumns = function () {
     });
 
     function resizeColumn(event) {
+        didDrag = true;
         if (currentHeader) {
             currentHeader.style.cursor = "col-resize";
             let newWidth = startWidth + (event.clientX - startX);
