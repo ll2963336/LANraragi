@@ -772,6 +772,43 @@ Reader.loadBookmarkStatus = function () {
     )
 }
 
+// Open source URL in new tab
+Reader.openSourceUrl = function () {
+    if (!Reader.tags) return;
+    
+    const sourceMatch = Reader.tags.match(/source:([^,]+)(?:,|$)/i);
+    if (sourceMatch) {
+        const sourceUrl = sourceMatch[1].trim();
+        if (sourceUrl) {
+            window.open(sourceUrl, '_blank', 'noopener,noreferrer');
+        }
+    }
+}
+
+// Dynamically add source link icon if source tag exists
+Reader.loadSourceLink = function () {
+    if (!Reader.tags) return;
+    
+    // Extract source URL from tags
+    const sourceMatch = Reader.tags.match(/source:([^,]+)(?:,|$)/i);
+    if (!sourceMatch) return;
+    
+    const sourceUrl = sourceMatch[1].trim();
+    if (!sourceUrl) return;
+    
+    // Add source link icon to the left options area
+    const leftOptionsList = document.querySelectorAll(".absolute-options.absolute-left");
+    leftOptionsList.forEach(leftOption => {
+        let sourceLink = document.createElement("a");
+        sourceLink.className = "fas fa-external-link-alt fa-2x open-source";
+        sourceLink.href = sourceUrl;
+        sourceLink.target = "_blank";
+        sourceLink.rel = "noopener noreferrer";
+        sourceLink.title = "Open Source URL (S)";
+        leftOption.appendChild(sourceLink);
+    });
+}
+
 Reader.updateMetadata = function () {
     const img = $("#img")[0];
     const filename = img.dataset.filename;
@@ -1051,38 +1088,49 @@ Reader.registerAutoNextPage = function () {
 };
 
 Reader.startAutoNextPage = function () {
-    Reader.autoNextPageCountdown = Math.trunc(Reader.AutoNextPageInterval);
-    if (Reader.autoNextPageCountdown <= 0) {
-        LRR.toast({
-            heading: I18N.AutoNextPageFailHeader,
-            text: I18N.AutoNextPageFailBody,
-            icon: "error",
-            hideAfter: 5000,
-        });
-        return;
+    Reader.autoNextPageCountdown = Reader.AutoNextPageInterval;
+    if (Reader.autoNextPageCountdown < 0.1) {
+        Reader.autoNextPageCountdown = 0.1;
     }
 
     Reader.autoNextPage = true;
 
     const aEls = $(".toggle-auto-next-page");
     aEls.removeClass("fa-stopwatch");
-    aEls.text(Reader.autoNextPageCountdown);
+    
+    // Format display: integer displays integer, decimal retains 1 decimal place
+    const formatCountdown = (val) => Number.isInteger(val) ? val : val.toFixed(1);
+    aEls.text(formatCountdown(Reader.autoNextPageCountdown));
 
+    // Define page turning logic
+    const doPageTurn = () => {
+        if (Reader.mangaMode)
+            Reader.changePage(-1);
+        else
+            Reader.changePage(1);
+
+        const continueNextPage = Reader.mangaMode ? Reader.currentPage > 0 : Reader.currentPage < Reader.maxPage;
+        if (continueNextPage) {
+            Reader.startAutoNextPage();
+        } else {
+            Reader.stopAutoNextPage();
+        }
+    };
+
+    // 0 second interval: turn page immediately
+    if (Reader.autoNextPageCountdown <= 0) {
+        doPageTurn();
+        return;
+    }
+
+    // Use 100ms precision timer
     Reader.autoNextPageCountdownTaskId = setInterval(() => {
+        Reader.autoNextPageCountdown -= 0.1;
+        Reader.autoNextPageCountdown = Math.round(Reader.autoNextPageCountdown * 10) / 10; // Avoid floating point precision issues
+        
         if (Reader.autoNextPageCountdown <= 0) {
             clearInterval(Reader.autoNextPageCountdownTaskId);
-
-            if (Reader.mangaMode)
-                Reader.changePage(-1);
-            else
-                Reader.changePage(1);
-
-            const continueNextPage = Reader.mangaMode ? Reader.currentPage > 0 : Reader.currentPage < Reader.maxPage;
-            if (continueNextPage) {
-                Reader.startAutoNextPage();
-            } else {
-                Reader.stopAutoNextPage();
-            }
+            doPageTurn();
             return;
         }
         Reader.autoNextPageCountdown -= 1;
@@ -1293,8 +1341,9 @@ Reader.changePage = function (targetPage, resetAuto = false) {
 
     // Reset timer if user manually changes pages during slideshow
     if (resetAuto && Reader.autoNextPage) {
-        Reader.autoNextPageCountdown = Math.trunc(Reader.AutoNextPageInterval);
-        $(".toggle-auto-next-page").text(Reader.autoNextPageCountdown);
+        Reader.autoNextPageCountdown = Reader.AutoNextPageInterval;
+        const formatCountdown = (val) => Number.isInteger(val) ? val : val.toFixed(1);
+        $(".toggle-auto-next-page").text(formatCountdown(Reader.autoNextPageCountdown));
     }
 
     // Sync position if in infinite scroll mode
